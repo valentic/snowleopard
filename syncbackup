@@ -1,0 +1,9 @@
+#!/bin/sh
+
+cd ~/backup
+
+rsync -av /usr/local/bin .
+rsync -av /etc/cron.d .
+sudo rsync -av /etc .
+rsync -av /opt/transport .
+

@@ -1,0 +1,11 @@
+#!/bin/sh
+
+PROJECT=snowleopard
+BASEPATH=/opt/transport/groups/$PROJECT/support
+
+. $BASEPATH/env/bin/activate
+
+echo Press Ctrl-C to exit
+
+$BASEPATH/bin/showsunsaver.py
+

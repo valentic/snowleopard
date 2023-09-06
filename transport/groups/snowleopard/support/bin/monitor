@@ -1,0 +1,291 @@
+#!/usr/bin/env python
+
+########################################################################
+#
+#   Real-time status viewer
+#
+#   2011-05-04  Todd Valentic
+#               Initial implementation
+#
+########################################################################
+
+import sys
+import curses
+import curses.ascii
+import optparse
+import socket
+import ConfigParser
+import StringIO
+import time
+
+import directory
+
+socket.setdefaulttimeout(10)
+
+enableLabel = ['--','On']
+alarmLabel  = ['--','On']
+cpuLabel = {'min':'14MHz', '42':'42MHz', '166':'166MHz', 'max':'200MHz'}
+
+class Monitor:
+
+    def __init__(self,win,args,options):
+
+        self.win        = win
+        self.options    = options
+
+        while True:
+            try:
+                self.directory  = directory.Directory()
+                self.sbcctl     = self.directory.connect('sbcctl')
+                self.cache      = self.directory.connect('cache')
+                break
+            except:
+                print 'Waiting to connect to services...'
+                time.sleep(10)
+
+        self.serialnum = self.cache.lookup('serialnum')
+
+    def run(self):
+
+        self.win.timeout(self.options.rate*1000)
+        self.update()
+
+        while True:
+            c = self.win.getch()
+            if c==-1:
+                self.update()
+            elif c==curses.ascii.ESC:
+                break
+
+        self.win.erase()
+
+    def showFlag(self,x,y,label,flag,dependson=True):
+        if dependson and flag:
+            text = '[X] '+label
+        else:
+            text = '[ ] '+label
+
+        self.win.addstr(x,y,text)
+
+    def showDIO(self,x,y,section,status):
+
+        numpins = {'DIO1':9, 'DIO2':8}
+
+        text = '%s: ' % section
+        for pin in range(numpins[section]):
+            if status.getboolean(section,'Pin %d' % pin):
+                text+=' %d'%pin
+            else:
+                text+='  '
+
+        self.win.addstr(x,y,text)
+
+    def getStatus(self):
+        buffer = StringIO.StringIO(self.sbcctl.status(True))
+        status = ConfigParser.ConfigParser()
+        status.readfp(buffer)
+        return status
+
+    def update(self):
+
+        self.win.addstr(1,1,'*')
+        self.win.move(curses.LINES-2,curses.COLS-2)
+        self.win.refresh()
+
+        try:
+            status = self.getStatus()
+        except:
+            status = None
+
+        try:
+            weather = self.cache.get('wxt520')
+        except:
+            weather = None
+
+        try:
+            if 'gps' in self.cache.list():
+                gps = self.cache.get('gps')
+            else:
+                gps = self.cache.get('iridium')
+        except:
+            gps = None
+
+        try:
+            status.readfp(StringIO.StringIO(self.cache.get('pulsetimer')))
+        except:
+            pass
+
+        self.win.addstr(1,1,' ')
+        self.win.move(curses.LINES-2,curses.COLS-2)
+        self.win.refresh()
+
+        self.win.erase()
+
+        self.win.addstr(1,2,'System Monitor (Serial num: %s)' % self.serialnum)
+
+        if not status:
+            self.win.addstr(4,2,'Failed to read status')
+            self.win.move(curses.LINES-2,curses.COLS-2)
+            self.win.refresh()
+            return
+
+        self.win.addstr(1,52,status.get('metadata','timestamp'))
+        self.win.addstr(1,73,'%.1fC' % status.getfloat('temp','temp_c'))
+
+        x = 28
+        y = 3
+
+        self.win.addstr(y,x,'Onboard Devices',curses.A_UNDERLINE)
+        self.showFlag(y+1,x,'RS232',status.getboolean('power','rs232'))
+        self.showFlag(y+2,x,'PC104',status.getboolean('power','pc104'))
+        self.showFlag(y+3,x,'Ethernet',status.getboolean('power','ethernet'))
+        self.showFlag(y+4,x,'USB',status.getboolean('power','usb'))
+        self.showFlag(y+5,x,'Green LED',status.getboolean('power','led.green'))
+        self.showFlag(y+6,x,'Red LED',status.getboolean('power','led.red'))
+
+        x=48
+        y=3
+
+        self.win.addstr(y,x,'CPU:   %s' % cpuLabel[status.get('power','cpu')])
+        self.showDIO(y+1,x,'DIO1',status)
+        self.showDIO(y+2,x,'DIO2',status)
+
+        x = 2
+        y = 3
+
+        self.win.addstr(y,x,'Instrument Power      ',curses.A_UNDERLINE)
+        self.showFlag(y+1,x,'Heater',status.getint('DIO1','Pin 5')==0)
+        self.showFlag(y+2,x,'Netcam',status.getint('DIO1','Pin 6')==0)
+        self.showFlag(y+3,x,'Iridium',status.getint('DIO1','Pin 7')==0)
+
+        self.showWeather(13,2,weather)
+        self.showGPS(9,2,gps)
+        self.showTS9700(11,28,status)
+
+        self.win.addstr(curses.LINES-2,2,'Press ESC to exit')
+        self.win.move(curses.LINES-2,curses.COLS-2)
+        self.win.refresh()
+
+    def showTS9700(self,y,x,data):
+
+        c1 = 13
+        c2 = 25
+
+        self.win.addstr(y,x,'ADC Channel ',curses.A_UNDERLINE)
+        self.win.addstr(y,x+c1,'Measured  ',curses.A_UNDERLINE)
+        self.win.addstr(y,x+c2,'Cooked   ',curses.A_UNDERLINE)
+        y+=1
+
+        if not data:
+            self.win.addstr(y,x,'Waiting for data')
+            return
+
+        if data.has_section('TS9700'):
+
+            channels = ['Battery V','Solar V','Unused',
+                        'Load A','Solar A','Wind A',
+                        'Wind Speed','Wind Dir']
+
+            cooked = []
+
+            for k in range(len(channels)):
+                cooked.append(data.getint('TS9700','channel.%d'%k)*10/4095.)
+
+            cooked[0] = cooked[0]*2                         # battery v
+            cooked[1] = cooked[1]*3                         # solar v
+            cooked[2] = cooked[2]                           # unused
+            cooked[3] = (cooked[0]/2-cooked[3])*(1000/13.2) # load a
+            cooked[4] = cooked[4]*10/3                      # solar a
+            cooked[5] = cooked[5]*5                         # wind a
+            cooked[6] = cooked[6]*100/5                     # wind speed
+            cooked[7] = cooked[7]*360/5                     # wind dir
+
+            for index,label in enumerate(channels):
+                self.win.addstr(y,x,'%s' % label)
+                volts = data.getint('TS9700','channel.%s'%index)*10/4095.
+                self.win.addstr(y,x+c1,'%7.4f V' % volts)
+                self.win.addstr(y,x+c2,'%8.4f' % cooked[index])
+                y+=1
+
+        if data.has_section('pulsetimer'):
+            freq = data.getfloat('pulsetimer','freq.mean')
+        else:
+            freq = 0
+
+        rpm  = freq*60/2
+        self.win.addstr(y,x,'Wind RPM')
+        self.win.addstr(y,x+c1,'%7.4f Hz' % freq)
+        self.win.addstr(y,x+c2,'%8d' % rpm)
+        y+=1
+
+        volts = data.getfloat('EP9301','channel.4')
+        stack_a = (volts-0.02)/0.05625
+        self.win.addstr(y,x,'Stack A')
+        self.win.addstr(y,x+c1,'%7.4f V' % volts)
+        self.win.addstr(y,x+c2,'%8.4f' % stack_a)
+        y+=1
+
+    def showGPS(self,y,x,data):
+
+        self.win.addstr(y,x,'Location              ',curses.A_UNDERLINE)
+
+        if not data:
+            self.win.addstr(y+1,x,'Waiting for data')
+            return
+
+        self.win.addstr(y+1,x,'Latitude : %5.1f' % data['latitude'])
+        self.win.addstr(y+2,x,'Longitude: %5.1f' % data['longitude'])
+
+    def showWeather(self,y,x,data):
+
+        self.win.addstr(y,x,'Weather Station       ',curses.A_UNDERLINE)
+
+        if not data:
+            self.win.addstr(y+1,x,'Waiting for data')
+            return
+
+        self.win.addstr(y+1,x,'Temperature: %.1f C' % data['Ta'])
+        self.win.addstr(y+2,x,'Humidity   : %.1f %%' % data['Ua'])
+        self.win.addstr(y+3,x,'Wind speed : %.1f m/s' % data['Sm'])
+        self.win.addstr(y+4,x,'Wind dir   : %3d deg' % data['Dm'])
+        self.win.addstr(y+5,x,'Pressure   : %d mbar' % data['Pa'])
+
+    def showBattery(self,y,x,battery,values):
+
+        label = battery
+        volts = values['%s_Voltage'%battery]/1000.
+        amps  = values['%s_Current'%battery]
+        watts = volts*amps/1000
+
+        if watts<0:
+            watts=0
+
+        self.win.addstr(y,x,'%4s: %5.1fV %6.1fmA %4.1fW' % (label,volts,amps,watts))
+
+    def showCurrent(self,y,x,label,key,values):
+        self.win.addstr(y,x,'%13s: %6.1f mA' % (label,values[key]))
+
+    def showTemperature(self,y,x,label,key,values):
+        self.win.addstr(y,x,'%13s: %6.1f C' % (label,values[key]))
+
+
+def main(win,args,options):
+    Monitor(win,args,options).run()
+
+if __name__ == '__main__':
+
+    usage = '%prog [OPTIONS]'
+
+    parser = optparse.OptionParser(usage=usage)
+
+    parser.add_option('-r','--rate',
+                        dest='rate',
+                        type='float',
+                        metavar='SECS',
+                        default='5',
+                        help='sample rate in msecs')
+
+    (options,args) = parser.parse_args()
+
+    curses.wrapper(main,args,options)
+

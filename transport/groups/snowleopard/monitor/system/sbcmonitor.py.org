@@ -1,0 +1,169 @@
+#!/usr/bin/env python
+
+##################################################################
+#
+#   Sample TS-7260 sensors via sbcctl
+#
+#   2007-08-15  Todd Valentic
+#               Initial implementation.
+#
+#   2007-08-21  Todd Valentic
+#               Use the sbcctl service.
+#
+#   2009-09-04  Todd Valentic
+#               Use DataMonitor.
+#               Handle missing ADC in encodeADC (i.e. 9700 board
+#                   is not always present).
+#
+#   2009-11-09  Todd Valentic
+#               Modify sbcctl status() call.
+#
+#   2009-11-10  Todd Valentic
+#               Opps, XML-RPC doesn't allow keyword args, just pass
+#                   in True for sbcctl.status() to indicate that we
+#                   want the ADC values.
+#
+#   2010-01-22  Todd Valentic
+#               Use getStatus()
+#               Add power and version to output record
+#
+#   2011-07-27  Todd Valentic
+#               Added TS-ADC16 fields. Update to version 0x02.
+#		        Request PC104 resource during sampling.
+#
+#   2012-01-15  Todd Valentic
+#               Added TS-RELAY8 fields.
+#               Update to version 0x03 - adds dynamic sections.
+#
+#   2013-03-04  Todd Valentic
+#               Migrate to DataMonitorComponent
+#
+##################################################################
+
+from DataMonitor import DataMonitorComponent
+
+import struct
+
+# Binary output file section IDs
+
+SECTION_END         = 0
+SECTION_TS7260      = 1
+SECTION_TS9700      = 2
+SECTION_TSADC16     = 3
+SECTION_TSRELAY8    = 4
+
+class SBCMonitor(DataMonitorComponent):
+
+    def __init__(self,*pos,**kw):
+        DataMonitorComponent.__init__(self,*pos,**kw)
+
+    def sample(self):
+        self.setResources('pc104=on')
+    	self.wait(0.5)
+        status = self.getStatus(adc=True)
+        self.clearResources()
+        return status
+
+    def encodeDIO(self,config,section):
+
+        inputs  = [int(x) for x in config.get(section,'pins.input').split()]
+        outputs = [int(x) for x in config.get(section,'pins.output').split()]
+
+        dirs = 0
+        pins = 0
+
+        for pin in range(16):
+            if pin in outputs:
+                dirs |= 2**pin
+
+        for pin in range(16):
+            try:
+                value = config.getint(section,'Pin %d' % pin)
+                if value:
+                    pins |= 2**pin
+            except:
+                continue
+
+        return pins,dirs
+
+    def encodeJumpers(self,config):
+
+        jps = 0
+
+        for jp in range(7):
+            try:
+                state = config.getint('jumpers',str(jp))
+                if state:
+                    jps |= 2**jp
+            except:
+                continue
+
+        return jps
+
+    def encodePower(self,config):
+
+        cpu = {'min':0, '42':1, '166':2, 'max':3}
+
+        power = 0
+
+        power |= config.getint('power','ethernet')  << 0
+        power |= config.getint('power','usb')       << 1
+        power |= config.getint('power','pc104')     << 2
+        power |= config.getint('power','rs232')     << 3
+        power |= config.getint('power','led.green') << 4
+        power |= config.getint('power','led.red')   << 5
+        power |= cpu[config.get('power','cpu')]     << 6
+
+        return power
+
+    def encodeADC(self,config,section,numChannels,dataType,key='channel.%d'):
+
+        values = []
+
+        for channel in range(numChannels):
+            try:
+                value = config.get(section,key % channel)
+            except:
+                value = 0
+            values.append(dataType(value))
+
+        return values
+
+    def write(self,output,timestamp,config):
+
+        version = 0x03
+
+        pins1,dirs1 = self.encodeDIO(config,'DIO1')
+        pins2,dirs2 = self.encodeDIO(config,'DIO2')
+        jumpers     = self.encodeJumpers(config)
+        ep9301      = self.encodeADC(config,'EP9301',5,float)
+        power       = self.encodePower(config)
+
+        output.write(struct.pack('!B',version))
+        output.write(struct.pack('!i',timestamp))
+        output.write(struct.pack('!B',SECTION_TS7260))
+        output.write(struct.pack('!2H',pins1,dirs1))
+        output.write(struct.pack('!2H',pins2,dirs2))
+        output.write(struct.pack('!H',jumpers))
+        output.write(struct.pack('!f',config.getfloat('temp','temp_c')))
+        output.write(struct.pack('!5f',*ep9301))
+        output.write(struct.pack('!B',power))
+
+        if config.has_section('TS9700'):
+            ts9700 = self.encodeADC(config,'TS9700',8,int)
+            output.write(struct.pack('!B',SECTION_TS9700))
+            output.write(struct.pack('!8H',*ts9700))
+
+        if config.has_section('TSADC16-3'):
+            key = 'channel-%d.volts'
+            tsadc16 = self.encodeADC(config,'TSADC16-3',16,float,key=key)
+            output.write(struct.pack('!B',SECTION_TSADC16))
+            output.write(struct.pack('!16f',*tsadc16))
+
+        if config.has_section('TSRELAY8'):
+            output.write(struct.pack('!B',SECTION_TSRELAY8))
+            output.write(struct.pack('!B',config.getint('TSRELAY8','relays')))
+
+        output.write(struct.pack('!B',SECTION_END))
+
+

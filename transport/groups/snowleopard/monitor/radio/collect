@@ -1,0 +1,13 @@
+#!/bin/bash
+
+CONFIGFILE=$1
+OUTPUTFILE=$2
+
+source $CONFIGFILE 
+
+exec ./hfrx.py   -N $NUMSAMPLES \
+            -x $GAIN \
+            -f $FREQUENCY \
+            -s $SAMPLERATE \
+            -t $OUTPUTFILE \
+            -a $ANTENNA

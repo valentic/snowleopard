@@ -1,0 +1,3 @@
+#!/bin/sh
+
+sudo tar zcvf backup.tgz backup --exclude=backup/transport/groups/snowleopard/support/env

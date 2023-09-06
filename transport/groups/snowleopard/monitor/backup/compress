@@ -1,0 +1,7 @@
+#!/bin/sh
+
+SRCFILE=$1
+DSTFILE=$2
+
+exec pbzip2 -f -1 -l -k -c $SRCFILE > $DSTFILE 
+

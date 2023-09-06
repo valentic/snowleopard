@@ -1,0 +1,8 @@
+python-dateutil
+pytz
+pymodbus
+ephem
+pyserial
+numpy
+scipy
+matplotlib

@@ -1,0 +1,4 @@
+HOME=/
+MAILTO=""
+
+0 * * * * root /usr/local/bin/mgetty-watchdog

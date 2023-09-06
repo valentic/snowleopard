@@ -1,2 +1,2 @@
 # snowleopard
-HF Spectrum Monitor Station
+HF Spectrum Monitoring Station
